@@ -5,8 +5,7 @@ Download movies from the internet.
 ## Requirements
 
 - Install [Python](https://www.python.org/).
-- Install [Requests](https://pypi.org/project/requests/) with pip:  
-	`pip install requests`
+- Install [Requests](https://pypi.org/project/requests/) with pip: `pip install requests`
 - Install [FFmpeg](https://ffmpeg.org/).
 
 ## Usage

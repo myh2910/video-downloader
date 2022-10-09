@@ -1,0 +1,5 @@
+*.py
+*/
+!movie_downloader/
+!movie_downloader/**
+**__pycache__/

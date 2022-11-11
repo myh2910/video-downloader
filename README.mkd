@@ -1,6 +1,6 @@
-# movie-downloader
+# video-downloader
 
-Download movies from the internet.
+Download videos from the internet.
 
 ## Requirements
 
@@ -11,7 +11,7 @@ Download movies from the internet.
 ## Usage
 
 ```python
-from movie_downloader import download_playlist
+from video_downloader import download_playlist
 
 if __name__ == "__main__":
 	download_playlist(
@@ -22,7 +22,7 @@ if __name__ == "__main__":
 ```
 
 ```python
-from movie_downloader import download_movie
+from video_downloader import download_movie
 
 if __name__ == "__main__":
 	download_movie(

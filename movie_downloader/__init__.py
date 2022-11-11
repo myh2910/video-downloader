@@ -1,9 +1,10 @@
 import os
-import subprocess
 import re
-import requests
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from timeit import default_timer
+
+import requests
 
 HOME = "Movie"
 
@@ -107,7 +108,7 @@ def download_movie(
 	title,
 	video_args,
 	audio_args,
-	ext="mkv",
+	ext="mp4",
 	max_workers=10,
 	subtitle=None
 ):

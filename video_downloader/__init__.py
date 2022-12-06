@@ -1,179 +1,181 @@
 import os
 import re
-import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from timeit import default_timer
 
 import requests
 
-HOME = "Video"
+from .config import CONFIG
 
-def wget(url, path, session=requests, err_format="%s", max_repeat=3):
-	_err = ""
+tmp = {}
+
+class Timer:
+	def start(self):
+		self.elapsed_time = -default_timer()
+
+	def end(self):
+		self.elapsed_time += default_timer()
+		print(f":: Elapsed time: {self.elapsed_time:0.2f} seconds")
+
+def wget(url, path, session=requests, err_format="%s", headers=None):
+	if not headers:
+		headers = CONFIG['headers']
+	max_repeat = CONFIG['repeat']
+	error = ""
+
 	while max_repeat > 0:
 		try:
-			res = session.get(url)
+			res = session.get(url, headers=headers)
 			res.raise_for_status()
 			with open(path, "wb") as file:
 				file.write(res.content)
 			return True
 		except Exception as err:
-			_err = err
+			error = err
 		max_repeat -= 1
-	print(err_format % _err)
+
+	print(err_format % error)
 	return False
 
 def get_fragment(task):
-	fragment, path, session, idx = task
-	print(f" [{idx}] Connecting to {fragment}...")
-	return wget(fragment, path, session, f" [{idx}] %s")
+	session, key, url, path, idx = task
+	print(f" [{idx}] Connecting to {url}...")
+	if not wget(url, path, session, f" [{idx}] %s", tmp[key]['headers']):
+		tmp[key]['status'] = False
 
-def download_playlist(
+def get_fragments_url(key):
+	max_repeat = CONFIG['repeat']
+	error = ""
+
+	while max_repeat > 0:
+		try:
+			res = requests.get(tmp[key]['url'], headers=CONFIG['headers'])
+			res.raise_for_status()
+			tmp[key]['status'] = True
+		except Exception as err:
+			error = err
+		max_repeat -= 1
+
+	if not tmp[key]['status']:
+		print(error)
+		return
+
+	tmp[key]['urls'] = [requests.compat.urljoin(tmp[key]['url'], i)
+		for i in re.findall(",\n(.*?)\n", res.content.decode("utf8") + "\n")]
+	tmp[key]['num'] = len(tmp[key]['urls'])
+	tmp[key]['path'] = os.path.join(tmp['path'], key)
+	tmp[key]['file'] = os.path.join(tmp[key]['path'], "%d.ts")
+	tmp[key]['idx'] = key.upper() + " %d/" + str(tmp[key]['num'])
+
+	if not os.path.exists(tmp[key]['path']):
+		os.makedirs(tmp[key]['path'])
+
+	print(f":: [{key.upper()}] {tmp[key]['num']} fragments found.")
+
+def download_video(
 	title,
-	url,
-	dirname="1080p",
-	ext="mp4",
-	max_duration=None,
-	max_workers=10,
-	subtitle=None
+	video_url,
+	video_headers=None,
+	audio_url=None,
+	audio_headers=None,
+	subtitle=None,
+	subtitle_headers=None
 ):
-	elapsed_time = -default_timer()
+	timer = Timer()
+	timer.start()
 
-	if not os.path.exists(f"{HOME}/{title}/{dirname}/"):
-		os.makedirs(f"{HOME}/{title}/{dirname}/")
-	fragment_path = f"{HOME}/{title}/{dirname}/%d.ts"
-	output_path = f"{HOME}/{title}/{title}.{ext}"
+	tmp['path'] = os.path.join(CONFIG['home'], title)
+	tmp['output'] = os.path.join(tmp['path'], title + ".%s")
 
-	try:
-		res = requests.get(url)
-		res.raise_for_status()
+	keys = []
+	if video_url:
+		keys.append('video')
+		tmp['video'] = {
+			'url': video_url,
+			'headers': video_headers,
+			'output': tmp['output'] % CONFIG['exts'][0],
+			'status': False
+		}
+	if audio_url:
+		keys.append('audio')
+		tmp['audio'] = {
+			'url': audio_url,
+			'headers': audio_headers,
+			'output': tmp['output'] % CONFIG['exts'][1],
+			'status': False
+		}
 
-		content = res.content.decode("utf8") + "\n"
-		fragments = [requests.compat.urljoin(url, _url) for _url in re.findall(",\n(.*?)\n", content)]
-		num_fragments = len(fragments)
-		print(":: %d fragments found, downloading..." % num_fragments)
+	# Get fragments urls
+	for key in keys:
+		print(f":: Downloading {key}...")
+		if os.path.exists(tmp[key]['output']):
+			print(f" File {tmp[key]['output']} already exists.")
+		else:
+			get_fragments_url(key)
 
-		with requests.Session() as session:
-			tasks = []
-			for i, fragment in enumerate(fragments):
-				if not os.path.exists(fragment_path % i):
-					tasks.append((fragment, fragment_path % i, session, f"{i + 1}/{num_fragments}"))
-					continue
+	# Download fragments
+	with requests.Session() as session:
+		tasks = []
 
-			with ThreadPoolExecutor(max_workers) as pool:
-				pool.map(get_fragment, tasks)
+		for key in keys:
+			if not tmp[key]['status']:
+				continue
 
-		if max_duration:
-			with requests.Session() as session:
-				tasks = []
-				for i, fragment in enumerate(fragments):
-					result = subprocess.run([
-							"ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", fragment_path % i
-						],
-						stdout=subprocess.PIPE,
-						stderr=subprocess.STDOUT
-					)
-					duration = result.stdout.decode("utf8").split("\r")[0]
-					print(f" [{i + 1}/{num_fragments}] Fragment duration: {duration}")
-					if duration != "N/A" and float(duration) < max_duration:
-						os.remove(fragment_path % i)
-						tasks.append((fragment, fragment_path % i, session, f"{i + 1}/{num_fragments}"))
+			for i in range(tmp[key]['num']):
+				path = tmp[key]['file'] % i
+				idx = tmp[key]['idx'] % (i + 1)
 
-				with ThreadPoolExecutor(max_workers) as pool:
-					pool.map(get_fragment, tasks)
+				if os.path.exists(path):
+					print(f" [{idx}] File {path} already exists.")
+				else:
+					tasks.append((session, key, tmp[key]['urls'][i], path, idx))
 
-		with open(output_path, "wb") as video:
-			for i in range(num_fragments):
-				if not os.path.exists(fragment_path % i):
-					print(f" File {fragment_path % i} doesn't exist")
+		with ThreadPoolExecutor(CONFIG['threads']) as pool:
+			pool.map(get_fragment, tasks)
+
+	# Merge fragments
+	for key in keys:
+		if not tmp[key]['status']:
+			continue
+
+		print(f":: Merging {key} fragments...")
+
+		with open(tmp[key]['output'], "wb") as output:
+			for i in range(tmp[key]['num']):
+				path = tmp[key]['file'] % i
+				idx = tmp[key]['idx'] % (i + 1)
+
+				if not os.path.exists(path):
+					print(f" File {path} doesn't exist.")
 					break
 
-				print(f" [{i + 1}/{num_fragments}] Merging fragment {fragment_path % i}...")
-				with open(fragment_path % i, "rb") as file:
-					video.write(file.read())
+				print(f" [{idx}] Merging fragment {path}...")
+				with open(path, "rb") as file:
+					output.write(file.read())
 
-	except Exception as err:
-		print(f" Error: {err}")
+	# Merge video and audio files
+	while video_url and audio_url:
+		print(":: Merging video and audio...")
 
-	if subtitle:
-		print(f" Downloading subtitle {subtitle[0]}...")
-		wget(subtitle[0], f"{HOME}/{title}/{title}.{subtitle[1]}")
+		if os.path.exists(tmp['output'] % CONFIG['exts'][2]):
+			print(f" File {tmp['output'] % CONFIG['exts'][2]} already exists.")
+			break
 
-	elapsed_time += default_timer()
-	print(f":: Elapsed time: {elapsed_time:0.2f}")
-
-	return output_path
-
-def download_movie(
-	title,
-	video_args,
-	audio_args,
-	ext="mp4",
-	max_workers=10,
-	subtitle=None
-):
-	elapsed_time = -default_timer()
-
-	video_path = download_playlist(title, *video_args, max_workers=max_workers)
-	audio_path = download_playlist(title, *audio_args, max_workers=max_workers)
-	output_path = f"{HOME}/{title}/{title}.{ext}"
-
-	print(" Merging video and audio...")
-	os.system(f'ffmpeg -i "{video_path}" -i "{audio_path}" -c copy "{output_path}"')
-
-	if subtitle:
-		print(f" Downloading subtitle {subtitle[0]}...")
-		wget(subtitle[0], f"{HOME}/{title}/{title}.{subtitle[1]}")
-
-	elapsed_time += default_timer()
-	print(f":: Elapsed time: {elapsed_time:0.2f}")
-
-	return output_path
-
-def download(
-	title,
-	url,
-	dirname="1080p",
-	ext="mp4",
-	subtitle=None
-):
-	elapsed_time = -default_timer()
-
-	if not os.path.exists(f"{HOME}/{title}/{dirname}/"):
-		os.makedirs(f"{HOME}/{title}/{dirname}/")
-	fragment_path = f"{HOME}/{title}/{dirname}/%d.ts"
-	output_path = f"{HOME}/{title}/{title}.{ext}"
-
-	try:
-		print(":: Downloading...")
-
-		i = 0
-		while True:
-			status = get_fragment((url % i, fragment_path % i, requests, str(i + 1)))
-			if not status:
+		for key in keys:
+			if not os.path.exists(tmp[key]['output']):
+				print(f" File {tmp[key]['output']} doesn't exist.")
+				keys = None
 				break
-			i += 1
 
-		num_fragments = i
+		if keys:
+			os.system('ffmpeg -i "%s" -i "%s" -c copy "%s"' % (
+				tmp['output'] % CONFIG['exts'][i] for i in range(3)
+			))
+		break
 
-		with open(output_path, "wb") as video:
-			for i in range(num_fragments):
-				if not os.path.exists(fragment_path % i):
-					print(f" File {fragment_path % i} doesn't exist")
-					break
-
-				print(f" [{i + 1}/{num_fragments}] Merging fragment {fragment_path % i}...")
-				with open(fragment_path % i, "rb") as file:
-					video.write(file.read())
-
-	except Exception as err:
-		print(f" Error: {err}")
-
+	# Download subtitle file
 	if subtitle:
-		print(f" Downloading subtitle {subtitle[0]}...")
-		wget(subtitle[0], f"{HOME}/{title}/{title}.{subtitle[1]}")
+		print(f":: Downloading subtitle {subtitle[0]}...")
+		wget(subtitle[0], tmp['output'] % subtitle[1], headers=subtitle_headers)
 
-	elapsed_time += default_timer()
-	print(f":: Elapsed time: {elapsed_time:0.2f}")
-
-	return output_path
+	timer.end()
